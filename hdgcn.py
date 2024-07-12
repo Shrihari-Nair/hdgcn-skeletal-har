@@ -1,12 +1,9 @@
 import torch
 import torch.nn as nn
 import math
-
-# from torch.autograd import Variable
 import numpy as np
 
 from einops import rearrange, repeat
-# from einops.layers.torch import Rearrange
 
 from graph.tools import get_groups
 
