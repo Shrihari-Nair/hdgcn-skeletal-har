@@ -43,12 +43,32 @@ def init_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 def import_class(import_str):
+    """
+    Import a class from a string.
+
+    Args:
+        import_str (str): A string of the form 'module_name.ClassName'
+
+    Returns:
+        class: The class object
+
+    Raises:
+        ImportError: If the class cannot be found
+    """
+    # Split the string into module name and class name
     mod_str, _sep, class_str = import_str.rpartition('.')
+
+    # Import the module
     __import__(mod_str)
+
+    # Get the class from the module
     try:
         return getattr(sys.modules[mod_str], class_str)
     except AttributeError:
-        raise ImportError('Class %s cannot be found (%s)' % (class_str, traceback.format_exception(*sys.exc_info())))
+        # If the class cannot be found, raise an ImportError
+        raise ImportError(
+            'Class %s cannot be found (%s)' %
+            (class_str, traceback.format_exception(*sys.exc_info())))
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -315,7 +335,6 @@ class Processor():
             else:
                 self.train_writer = self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'test'), 'test')
         self.global_step = 0
-        # pdb.set_trace()
         self.load_model()
 
         if self.arg.phase == 'model_size':
@@ -337,23 +356,45 @@ class Processor():
                     output_device=self.output_device)
 
     def load_data(self):
+        # Import the feeder class based on the argument
         Feeder = import_class(self.arg.feeder)
+        
+        # Initialize an empty dictionary to store the data loaders
         self.data_loader = dict()
+        
+        # If the phase is 'train', load the train data
         if self.arg.phase == 'train':
+            # Create a DataLoader for the train data
             self.data_loader['train'] = torch.utils.data.DataLoader(
+                # Use the feeder class to create the dataset
                 dataset=Feeder(**self.arg.train_feeder_args),
+                # Set the batch size
                 batch_size=self.arg.batch_size,
+                # Shuffle the data
                 shuffle=True,
+                # Number of worker processes
                 num_workers=self.arg.num_worker,
+                # Drop the last batch if it's not full
                 drop_last=True,
+                # Initialize the seed for each worker
                 worker_init_fn=init_seed)
-        self.data_loader['test'] = torch.utils.data.DataLoader(
-            dataset=Feeder(**self.arg.test_feeder_args),
-            batch_size=self.arg.test_batch_size,
-            shuffle=False,
-            num_workers=self.arg.num_worker,
-            drop_last=False,
-            worker_init_fn=init_seed)
+        
+        # If the phase is not 'train', load the test data
+        else:
+            # Create a DataLoader for the test data
+            self.data_loader['test'] = torch.utils.data.DataLoader(
+                # Use the feeder class to create the dataset
+                dataset=Feeder(**self.arg.test_feeder_args),
+                # Set the batch size
+                batch_size=self.arg.test_batch_size,
+                # Do not shuffle the data
+                shuffle=False,
+                # Number of worker processes
+                num_workers=self.arg.num_worker,
+                # Do not drop the last batch
+                drop_last=False,
+                # Initialize the seed for each worker
+                worker_init_fn=init_seed)
 
     def load_model(self):
         output_device = self.arg.device[0] if type(self.arg.device) is list else self.arg.device
@@ -399,21 +440,38 @@ class Processor():
                 self.model.load_state_dict(state)
 
     def load_optimizer(self):
+        """
+        This function loads the optimizer used for training the model.
+        It supports two optimizers: SGD and Adam.
+        The optimizer is set based on the value of the argument 'optimizer' in the argument dictionary.
+        The learning rate, momentum, nesterov, and weight decay are set based on the values of the corresponding arguments.
+        If the optimizer is SGD, the momentum and nesterov are set to 0.9 and True respectively.
+        If the optimizer is Adam, the weight decay is set to the value of the argument 'weight_decay'.
+        If the optimizer is neither SGD nor Adam, a ValueError is raised.
+        Finally, a log message is printed indicating that the warm up epoch is set to the value of the argument 'warm_up_epoch'.
+        """
+        # Check the optimizer and set the optimizer accordingly
         if self.arg.optimizer == 'SGD':
+            # If the optimizer is SGD, set the learning rate, momentum, nesterov, and weight decay
             self.optimizer = optim.SGD(
-                self.model.parameters(),
-                lr=self.arg.base_lr,
-                momentum=0.9,
-                nesterov=self.arg.nesterov,
-                weight_decay=self.arg.weight_decay)
+                self.model.parameters(),  # Set the parameters of the model as the parameters of the optimizer
+                lr=self.arg.base_lr,  # Set the learning rate to the value of the argument 'base_lr'
+                momentum=0.9,  # Set the momentum to 0.9
+                nesterov=self.arg.nesterov,  # Set the nesterov flag to the value of the argument 'nesterov'
+                weight_decay=self.arg.weight_decay  # Set the weight decay to the value of the argument 'weight_decay'
+            )
         elif self.arg.optimizer == 'Adam':
+            # If the optimizer is Adam, set the learning rate and weight decay
             self.optimizer = optim.Adam(
-                self.model.parameters(),
-                lr=self.arg.base_lr,
-                weight_decay=self.arg.weight_decay)
+                self.model.parameters(),  # Set the parameters of the model as the parameters of the optimizer
+                lr=self.arg.base_lr,  # Set the learning rate to the value of the argument 'base_lr'
+                weight_decay=self.arg.weight_decay  # Set the weight decay to the value of the argument 'weight_decay'
+            )
         else:
+            # If the optimizer is neither SGD nor Adam, raise a ValueError
             raise ValueError()
 
+        # Print a log message indicating that the warm up epoch is set to the value of the argument 'warm_up_epoch'
         self.print_log('using warm up, epoch: {}'.format(self.arg.warm_up_epoch))
 
     def save_arg(self):
