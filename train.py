@@ -74,57 +74,84 @@ class LabelSmoothingCrossEntropy(nn.Module):
 
 
 def get_parser():
-    # parameter priority: command line > config > default
+    """
+    Define the command line arguments for the training script. The priority of the arguments is as follows:
+    command line > config file > default value.
+    """
+
+    # Create the argument parser
     parser = argparse.ArgumentParser(
         description='Spatial Temporal Graph Convolution Network')
+
+    # Define the command line arguments
+    # Work directory
     parser.add_argument(
         '--work-dir',
-        default='./work_dir/temp',
+        default='./work_dir/temp',  # Default work directory
         help='the work folder for storing results')
 
+    # Model saved name
     parser.add_argument('-model_saved_name', default='')
+
+    # Config file path
     parser.add_argument(
         '--config',
-        default='./config/nturgbd-cross-view/test_bone.yaml',
+        default='./config/nturgbd-cross-view/test_bone.yaml',  # Default config file path
         help='path to the configuration file')
 
-    # processor
+    # Processor arguments
+    # Phase
     parser.add_argument(
         '--phase', default='train', help='must be train or test')
+
+    # Save score
     parser.add_argument(
         '--save-score',
-        type=str2bool,
-        default=False,
-        help='if ture, the classification score will be stored')
+        type=str2bool,  # Boolean type argument
+        default=False,  # Default value
+        help='if true, the classification score will be stored')
 
-    # visulize and debug
+    # Visualize and debug arguments
+    # Random seed
     parser.add_argument(
         '--seed', type=int, default=1, help='random seed for pytorch')
+
+    # Log interval
     parser.add_argument(
         '--log-interval',
         type=int,
         default=100,
         help='the interval for printing messages (#iteration)')
+
+    # Save interval
     parser.add_argument(
         '--save-interval',
         type=int,
         default=1,
         help='the interval for storing models (#iteration)')
+
+    # Save epoch
     parser.add_argument(
         '--save-epoch',
         type=int,
         default=30,
         help='the start epoch to save model (#iteration)')
+
+    # Evaluation interval
     parser.add_argument(
         '--eval-interval',
         type=int,
         default=5,
         help='the interval for evaluating models (#iteration)')
+
+    # Print log
     parser.add_argument(
         '--print-log',
         type=str2bool,
         default=True,
         help='print logging or not')
+
+    # Show top k accuracy
     parser.add_argument(
         '--show-topk',
         type=int,
@@ -132,36 +159,50 @@ def get_parser():
         nargs='+',
         help='which Top K accuracy will be shown')
 
-    # feeder
+    # Data loader arguments
+    # Data feeder
     parser.add_argument(
         '--feeder', default='feeder.feeder', help='data loader will be used')
+
+    # Number of worker
     parser.add_argument(
         '--num-worker',
         type=int,
         default=32,
         help='the number of worker for data loader')
+
+    # Training data loader arguments
     parser.add_argument(
         '--train-feeder-args',
         action=DictAction,
         default=dict(),
         help='the arguments of data loader for training')
+
+    # Testing data loader arguments
     parser.add_argument(
         '--test-feeder-args',
         action=DictAction,
         default=dict(),
         help='the arguments of data loader for test')
 
-    # model
+    # Model arguments
+    # Model
     parser.add_argument('--model', default=None, help='the model will be used')
+
+    # Model arguments
     parser.add_argument(
         '--model-args',
         action=DictAction,
         default=dict(),
         help='the arguments of model')
+
+    # Weights
     parser.add_argument(
         '--weights',
         default=None,
         help='the weights for network initialization')
+
+    # Ignored weights
     parser.add_argument(
         '--ignore-weights',
         type=str,
@@ -169,54 +210,82 @@ def get_parser():
         nargs='+',
         help='the name of weights which will be ignored in the initialization')
 
-    # optim
+    # Optimizer arguments
+    # Base learning rate
     parser.add_argument(
         '--base-lr', type=float, default=0.01, help='initial learning rate')
+
+    # Step for learning rate decay
     parser.add_argument(
         '--step',
         type=int,
         default=[20, 40, 60],
         nargs='+',
         help='the epoch where optimizer reduce the learning rate')
+
+    # Device
     parser.add_argument(
         '--device',
         type=int,
         default=0,
         nargs='+',
         help='the indexes of GPUs for training or testing')
+
+    # Optimizer
     parser.add_argument('--optimizer', default='SGD', help='type of optimizer')
+
+    # Use Nesterov or not
     parser.add_argument(
         '--nesterov', type=str2bool, default=False, help='use nesterov or not')
+
+    # Batch size
     parser.add_argument(
         '--batch-size', type=int, default=256, help='training batch size')
+
+    # Test batch size
     parser.add_argument(
         '--test-batch-size', type=int, default=256, help='test batch size')
+
+    # Start epoch
     parser.add_argument(
         '--start-epoch',
         type=int,
         default=0,
         help='start training from which epoch')
+
+    # Number of epochs
     parser.add_argument(
         '--num-epoch',
         type=int,
         default=80,
         help='stop training in which epoch')
+
+    # Weight decay
     parser.add_argument(
         '--weight-decay',
         type=float,
         default=0.0005,
         help='weight decay for optimizer')
+
+    # Learning rate decay ratio
     parser.add_argument(
         '--lr-ratio',
         type=float,
         default=0.001,
         help='decay rate for learning rate')
+
+    # Learning rate decay rate
     parser.add_argument(
         '--lr-decay-rate',
         type=float,
         default=0.1,
         help='decay rate for learning rate')
-    parser.add_argument('--warm_up_epoch', type=int, default=0)
+
+    # Warm up epochs
+    parser.add_argument(
+        '--warm_up_epoch', type=int, default=0)
+
+    # Loss type
     parser.add_argument('--loss-type', type=str, default='CE')
 
     return parser
@@ -226,7 +295,6 @@ class Processor():
     """ 
         Processor for Skeleton-based Action Recgnition
     """
-
     def __init__(self, arg):
         self.arg = arg
         self.save_arg()
@@ -349,12 +417,23 @@ class Processor():
         self.print_log('using warm up, epoch: {}'.format(self.arg.warm_up_epoch))
 
     def save_arg(self):
-        # save arg
+        # This function saves the arguments used for the run to a YAML file in the work directory.
+        # The file is named "config.yaml" and contains the arguments used for the run.
+
+        # Get the arguments as a dictionary
         arg_dict = vars(self.arg)
+
+        # Check if the work directory exists. If not, create it.
         if not os.path.exists(self.arg.work_dir):
             os.makedirs(self.arg.work_dir)
+
+        # Open the config.yaml file in the work directory for writing.
         with open('{}/config.yaml'.format(self.arg.work_dir), 'w') as f:
+            # Write a comment to the file indicating the command line used to run the script.
             f.write(f"# command line: {' '.join(sys.argv)}\n\n")
+
+            # Dump the argument dictionary to the file in YAML format.
+            # This will create a human-readable YAML file with the arguments used for the run.
             yaml.dump(arg_dict, f)
 
     def adjust_learning_rate(self, epoch, idx):
