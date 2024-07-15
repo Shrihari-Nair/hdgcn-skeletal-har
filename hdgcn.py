@@ -261,8 +261,6 @@ class AHA(nn.Module):
         self.aggregate = nn.Conv1d(inter_channels, in_channels, kernel_size=1)
         self.sigmoid = nn.Sigmoid()
         
-        
-        
     def forward(self, x):
         N, C, L, T, V = x.size()
         
