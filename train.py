@@ -84,12 +84,43 @@ class LabelSmoothingCrossEntropy(nn.Module):
         self.smoothing = smoothing
 
     def forward(self, x, target):
+        """
+        Forward pass of the label smoothing loss function.
+
+        Args:
+            x (torch.Tensor): The input tensor, typically the output of a model.
+            target (torch.Tensor): The target tensor, typically one-hot encoded
+                labels.
+
+        Returns:
+            loss (torch.Tensor): The label smoothing loss as a scalar.
+        """
+
+        # The confidence in the ground truth labels. If the smoothing is 0.1, then
+        # the confidence is 0.9.
         confidence = 1. - self.smoothing
+
+        # Compute the log probabilities of the input tensor. The log probabilities
+        # are computed along the last dimension.
         logprobs = F.log_softmax(x, dim=-1)
+
+        # Compute the negative log likelihood loss. The loss is computed by
+        # taking the log probability of the target class and summing over all
+        # samples in the batch.
         nll_loss = -logprobs.gather(dim=-1, index=target.unsqueeze(1))
+
+        # Squeeze the loss tensor to remove the extra dimension.
         nll_loss = nll_loss.squeeze(1)
+
+        # Compute the smoothing loss. The smoothing loss is the mean of the
+        # log probabilities over all classes.
         smooth_loss = -logprobs.mean(dim=-1)
+
+        # The total loss is the weighted sum of the negative log likelihood loss
+        # and the smoothing loss.
         loss = confidence * nll_loss + self.smoothing * smooth_loss
+
+        # Return the mean of the loss over the batch.
         return loss.mean()
 
 
@@ -693,75 +724,134 @@ class Processor():
             torch.save(weights, self.arg.model_saved_name + '-' + str(epoch+1) + '-' + str(int(self.global_step)) + '.pt')
 
     def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
+        # Open the files for writing if specified
         if wrong_file is not None:
+            # Open the file for writing the wrong predictions
             f_w = open(wrong_file, 'w')
         if result_file is not None:
+            # Open the file for writing the prediction results
             f_r = open(result_file, 'w')
+        
+        # Set the model to evaluation mode
         self.model.eval()
+        
+        # Print the evaluation epoch
         self.print_log('Eval epoch: {}'.format(epoch + 1))
+        
+        # Iterate over the specified loader names
         for ln in loader_name:
+            # Initialize the lists for storing loss values and scores
             loss_value = []
             score_frag = []
             label_list = []
             pred_list = []
             step = 0
+            
+            # Initialize the progress bar for the current loader
             process = tqdm(self.data_loader[ln])
+            
+            # Iterate over the batches in the loader
             for batch_idx, (data, label, index) in enumerate(process):
+                # Append the labels to the list
                 label_list.append(label)
+                
+                # Evaluate the model without gradient computation
                 with torch.no_grad():
+                    # Move the data and labels to the appropriate device
                     data = data.float().cuda(self.output_device)
                     label = label.long().cuda(self.output_device)
+                    
+                    # Get the model output
                     output = self.model(data)
+                    
+                    # Calculate the loss
                     loss = self.loss(output, label)
+                    
+                    # Append the model output score to the list
                     score_frag.append(output.data.cpu().numpy())
+                    
+                    # Append the loss value to the list
                     loss_value.append(loss.data.item())
-
+                    
+                    # Get the predicted labels
                     _, predict_label = torch.max(output.data, 1)
+                    
+                    # Append the predicted labels to the list
                     pred_list.append(predict_label.data.cpu().numpy())
+                    
+                    # Increment the step counter
                     step += 1
-
+                
+                # If either the wrong file or result file is specified, write the predictions to the respective files
                 if wrong_file is not None or result_file is not None:
+                    # Get the predicted labels and true labels as lists
                     predict = list(predict_label.cpu().numpy())
                     true = list(label.data.cpu().numpy())
+                    
+                    # Iterate over the predictions
                     for i, x in enumerate(predict):
+                        # If the result file is specified, write the prediction and true label to the file
                         if result_file is not None:
                             f_r.write(str(x) + ',' + str(true[i]) + '\n')
+                        
+                        # If the prediction is incorrect and the wrong file is specified, write the index, prediction, and true label to the file
                         if x != true[i] and wrong_file is not None:
                             f_w.write(str(index[i]) + ',' + str(x) + ',' + str(true[i]) + '\n')
+            
+            # Concatenate the scores from multiple batches to a single array
             score = np.concatenate(score_frag)
+            
+            # Calculate the mean loss value
             loss = np.mean(loss_value)
+            
+            # If the feeder is UCLA, update the sample names in the loader dataset
             if 'ucla' in self.arg.feeder:
                 self.data_loader[ln].dataset.sample_name = np.arange(len(score))
+            
+            # Calculate the accuracy of the model on the current loader
             accuracy = self.data_loader[ln].dataset.top_k(score, 1)
+            
+            # If the accuracy is better than the best accuracy, update the best accuracy and epoch
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
                 self.best_acc_epoch = epoch + 1
-
+            
+            # Print the accuracy and the model name
             print('Accuracy: ', accuracy, ' model: ', self.arg.model_saved_name)
+            
+            # If the phase is training, add the loss and accuracy to the tensorboard writer
             if self.arg.phase == 'train':
                 self.val_writer.add_scalar('loss', loss, self.global_step)
                 self.val_writer.add_scalar('acc', accuracy, self.global_step)
-
+            
+            # Create a dictionary of scores for each sample
             score_dict = dict(
                 zip(self.data_loader[ln].dataset.sample_name, score))
+            
+            # Print the mean loss value for the current loader
             self.print_log('\tMean {} loss of {} batches: {}.'.format(
                 ln, len(self.data_loader[ln]), np.mean(loss_value)))
+            
+            # Print the top-k accuracy for each specified value of k
             for k in self.arg.show_topk:
                 self.print_log('\tTop{}: {:.2f}%'.format(
                     k, 100 * self.data_loader[ln].dataset.top_k(score, k)))
-
+            
+            # If the save_score flag is set, save the score dictionary to a file
             if save_score:
                 with open('{}/epoch{}_{}_score.pkl'.format(
                         self.arg.work_dir, epoch + 1, ln), 'wb') as f:
                     pickle.dump(score_dict, f)
-
-            # acc for each class:
+            
+            # Calculate the accuracy for each class in the confusion matrix
             label_list = np.concatenate(label_list)
             pred_list = np.concatenate(pred_list)
             confusion = confusion_matrix(label_list, pred_list)
             list_diag = np.diag(confusion)
             list_raw_sum = np.sum(confusion, axis=1)
             each_acc = list_diag / list_raw_sum
+            
+            # Save the accuracy for each class to a file
             with open('{}/epoch{}_{}_each_class_acc.csv'.format(self.arg.work_dir, epoch + 1, ln), 'w') as f:
                 writer = csv.writer(f)
                 writer.writerow(each_acc)
