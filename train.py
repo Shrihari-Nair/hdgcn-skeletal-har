@@ -396,30 +396,47 @@ class Processor():
                 # Initialize the seed for each worker
                 worker_init_fn=init_seed)
 
+# Define a function to load the model
     def load_model(self):
+        # Determine the output device based on the argument
         output_device = self.arg.device[0] if type(self.arg.device) is list else self.arg.device
         self.output_device = output_device
+
+        # Import the model class based on the argument
         Model = import_class(self.arg.model)
+        
+        # Copy the model file to the working directory
         shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
-        print(Model)
+        
+        # Initialize the model using the model class and its arguments
         self.model = Model(**self.arg.model_args)
+        
+        # Choose the appropriate loss function based on the loss type
         if self.arg.loss_type == 'CE':
             self.loss = nn.CrossEntropyLoss().cuda(output_device)
         else:
             self.loss = LabelSmoothingCrossEntropy(smoothing=0.1).cuda(output_device)
 
+        # Load weights if specified in the arguments
         if self.arg.weights:
+            # Extract the global step from the weights file name
             self.global_step = int(arg.weights[:-3].split('-')[-1])
             self.print_log('Load weights from {}.'.format(self.arg.weights))
+            
+            # Load the weights from the file
             if '.pkl' in self.arg.weights:
                 with open(self.arg.weights, 'r') as f:
                     weights = pickle.load(f)
             else:
                 weights = torch.load(self.arg.weights)
 
+            # Move the weights to the output device and convert to OrderedDict
             weights = OrderedDict([[k.split('module.')[-1], v.cuda(output_device)] for k, v in weights.items()])
 
+            # Get the list of keys from the weights
             keys = list(weights.keys())
+            
+            # Remove specified weights to ignore
             for w in self.arg.ignore_weights:
                 for key in keys:
                     if w in key:
@@ -429,8 +446,10 @@ class Processor():
                             self.print_log('Can Not Remove Weights: {}.'.format(key))
 
             try:
+                # Load the model state dict with the weights
                 self.model.load_state_dict(weights)
             except Exception:
+                # Handle exceptions by updating the model state dict
                 state = self.model.state_dict()
                 diff = list(set(state.keys()).difference(set(weights.keys())))
                 print('Can not find these weights:')
@@ -495,15 +514,43 @@ class Processor():
             yaml.dump(arg_dict, f)
 
     def adjust_learning_rate(self, epoch, idx):
+        """
+        Adjust the learning rate based on the current epoch and index.
+
+        The learning rate is adjusted based on the following schedule:
+
+        - For the first `warm_up_epoch` epochs, the learning rate is linearly
+        increased from 0 to `base_lr`.
+        - For the remaining epochs, the learning rate is cosine-annealed from
+        `base_lr` to `base_lr * lr_ratio` over the course of the remaining
+        epochs.
+
+        The learning rate is updated for the optimizer, and the updated value
+        is returned.
+
+        Args:
+            epoch: The current epoch number.
+            idx: The current index in the epoch.
+
+        Returns:
+            The updated learning rate.
+        """
         if self.arg.optimizer == 'SGD' or self.arg.optimizer == 'Adam':
+            # If we're in the warm-up phase, linearly increase the learning rate
             if epoch < self.arg.warm_up_epoch:
                 lr = self.arg.base_lr * (epoch + 1) / self.arg.warm_up_epoch
             else:
+                # Otherwise, compute the learning rate based on the cosine annealing schedule
                 T_max = len(self.data_loader['train']) * (self.arg.num_epoch - self.arg.warm_up_epoch)
                 T_cur = len(self.data_loader['train']) * (epoch - self.arg.warm_up_epoch) + idx
 
+                # Compute the minimum learning rate (eta_min) for the cosine annealing schedule
                 eta_min = self.arg.base_lr * self.arg.lr_ratio
+
+                # Compute the learning rate using the cosine annealing schedule
                 lr = eta_min + 0.5 * (self.arg.base_lr - eta_min) * (1 + np.cos((T_cur / T_max) * np.pi))
+
+            # Update the learning rate for the optimizer
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = lr
             return lr
@@ -533,63 +580,116 @@ class Processor():
         return split_time
 
     def train(self, epoch, save_model=False):
+        """
+        Perform training for a single epoch.
+
+        Args:
+            epoch (int): The current epoch number.
+            save_model (bool, optional): Whether to save the model weights. Defaults to False.
+        """
+        
+        # Set the model to training mode
         self.model.train()
+
+        # Print the current epoch number
         self.print_log('Training epoch: {}'.format(epoch + 1))
+
+        # Get the training data loader
         loader = self.data_loader['train']
 
+        # Initialize empty lists to store the loss and accuracy values
         loss_value = []
         acc_value = []
+
+        # Add the current epoch number to the tensorboard writer
         self.train_writer.add_scalar('epoch', epoch, self.global_step)
+
+        # Record the current time
         self.record_time()
+
+        # Initialize a dictionary to track the time spent in different stages
         timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
+
+        # Create a progress bar iterator for the training data loader
         process = tqdm(loader)
 
+        # Iterate over the training data batch by batch
         for batch_idx, (data, label, index) in enumerate(process):
 
+            # Adjust the learning rate based on the current epoch and batch index
             self.adjust_learning_rate(epoch, batch_idx)
 
+            # Increment the global step counter
             self.global_step += 1
+
+            # Move the data and labels to the appropriate device (GPU)
             with torch.no_grad():
                 data = data.float().cuda(self.output_device)
                 label = label.long().cuda(self.output_device)
+
+            # Update the timer for data loading
             timer['dataloader'] += self.split_time()
 
-            # forward
+            # Perform forward pass
             output = self.model(data)
             loss = self.loss(output, label)
-            # backward
+
+            # Zero the gradients
             self.optimizer.zero_grad()
+
+            # Perform backward pass and update the model parameters
             loss.backward()
             self.optimizer.step()
 
+            # Append the loss value to the list
             loss_value.append(loss.data.item())
+
+            # Update the timer for model training
             timer['model'] += self.split_time()
 
-            value, predict_label = torch.max(output.data, 1)
+            # Calculate the accuracy
+            _, predict_label = torch.max(output.data, 1)
             acc = torch.mean((predict_label == label.data).float())
+
+            # Append the accuracy value to the list
             acc_value.append(acc.data.item())
+
+            # Add the accuracy and loss values to the tensorboard writer
             self.train_writer.add_scalar('acc', acc, self.global_step)
             self.train_writer.add_scalar('loss', loss.data.item(), self.global_step)
 
-            # statistics
+            # Update the learning rate
             self.lr = self.optimizer.param_groups[0]['lr']
             self.train_writer.add_scalar('lr', self.lr, self.global_step)
+
+            # Update the timer for statistics
             timer['statistics'] += self.split_time()
 
-        # statistics of time consumption and loss
+        # Calculate the proportion of time spent in each stage
         proportion = {
             k: '{:02d}%'.format(int(round(v * 100 / sum(timer.values()))))
             for k, v in timer.items()
         }
+
+        # Print the mean training loss and accuracy
         self.print_log(
             '\tMean training loss: {:.4f}.  Mean training acc: {:.2f}%.'.format(np.mean(loss_value), np.mean(acc_value)*100))
+
+        # Print the current learning rate
         self.print_log('\tLearning Rate: {:.4f}'.format(self.lr))
+
+        # Print the time consumption in different stages
         self.print_log('\tTime consumption: [Data]{dataloader}, [Network]{model}'.format(**proportion))
 
+        # Save the model weights if specified
         if save_model:
+            # Get the state dictionary of the model
             state_dict = self.model.state_dict()
+
+            # Create an ordered dictionary with the model weights
             weights = OrderedDict([[k.split('module.')[-1], v.cpu()] for k, v in state_dict.items()])
 
+            # Save the model weights to a file
             torch.save(weights, self.arg.model_saved_name + '-' + str(epoch+1) + '-' + str(int(self.global_step)) + '.pt')
 
     def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
@@ -668,35 +768,64 @@ class Processor():
                 writer.writerows(confusion)
 
     def start(self):
+        # Check if the phase is 'train'
         if self.arg.phase == 'train':
+            # Print the parameters
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
+            
+            # Calculate the global step
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
+            
+            # Function to count the number of parameters in the model
             def count_parameters(model):
                 return sum(p.numel() for p in model.parameters() if p.requires_grad)
+            
+            # Print the number of parameters in the model
             self.print_log(f'# Parameters: {count_parameters(self.model)}')
+            
+            # Loop through the epochs
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
+                # Determine if the model should be saved
                 save_model = (((epoch + 1) % self.arg.save_interval == 0) or (
-                        epoch + 1 == self.arg.num_epoch)) and (epoch+1) > self.arg.save_epoch
-
+                        epoch + 1 == self.arg.num_epoch)) and (epoch+1) > self.arg.save_epoch   
+                
+                # Train the model
                 self.train(epoch, save_model=True)
+                
+                # Evaluate the model
                 self.eval(epoch, save_score=True, loader_name=['test'])
-
-            # test the best model
+            
+            # Find the best model weights path
             weights_path = glob.glob(os.path.join(self.arg.work_dir, 'runs-'+str(self.best_acc_epoch)+'*'))[0]
+            
+            # Load the best model weights
             weights = torch.load(weights_path)
+            
+            # Check the device type
             if type(self.arg.device) is list:
                 if len(self.arg.device) > 1:
                     weights = OrderedDict([['module.'+k, v.cuda(self.output_device)] for k, v in weights.items()])
+            
+            # Load the model state dictionary with the best weights
             self.model.load_state_dict(weights)
-
+            
+            # Generate paths for wrong and right files
             wf = weights_path.replace('.pt', '_wrong.txt')
             rf = weights_path.replace('.pt', '_right.txt')
+            
+            # Disable print log
             self.arg.print_log = False
+            
+            # Evaluate the model on the test dataset
             self.eval(epoch=0, save_score=True, loader_name=['test'], wrong_file=wf, result_file=rf)
+            
+            # Enable print log
             self.arg.print_log = True
-
-
+            
+            # Calculate the total number of parameters in the model
             num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            
+            # Print model evaluation results
             self.print_log(f'Best accuracy: {self.best_acc}')
             self.print_log(f'Epoch number: {self.best_acc_epoch}')
             self.print_log(f'Model name: {self.arg.work_dir}')
@@ -706,17 +835,31 @@ class Processor():
             self.print_log(f'Batch Size: {self.arg.batch_size}')
             self.print_log(f'Test Batch Size: {self.arg.test_batch_size}')
             self.print_log(f'seed: {self.arg.seed}')
-
+        
+        # Check if the phase is 'test'
         elif self.arg.phase == 'test':
+            # Generate paths for wrong and right files
             wf = self.arg.weights.replace('.pt', '_wrong.txt')
             rf = self.arg.weights.replace('.pt', '_right.txt')
-
+            
+            # Check if weights are provided
             if self.arg.weights is None:
                 raise ValueError('Please appoint --weights.')
+            
+            # Disable print log
             self.arg.print_log = False
+            
+            # Print model and weights information
             self.print_log('Model:   {}.'.format(self.arg.model))
             self.print_log('Weights: {}.'.format(self.arg.weights))
+            
+            # Evaluate the model on the test dataset
             self.eval(epoch=0, save_score=self.arg.save_score, loader_name=['test'], wrong_file=wf, result_file=rf)
+            
+            # Enable print log
+            self.arg.print_log = True
+            
+            # Print done message
             self.print_log('Done.\n')
 
 if __name__ == '__main__':
